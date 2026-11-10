@@ -265,14 +265,28 @@ bot.catch((err) => console.error('Bot xatosi:', err.message));
 const PORT = process.env.PORT || 3000;
 http.createServer((_, res) => res.end('ok')).listen(PORT);
 
-bot
-  .launch({
-    allowedUpdates: ['message', 'business_connection', 'business_message'],
-  })
-  .catch((e) => {
-    console.error('Ishga tushmadi:', e.message);
-    process.exit(1);
-  });
+// Yangi deploy paytida eski va yangi nusxa qisqa vaqt birga ishlaydi va Telegram
+// "409 Conflict" qaytaradi. Bunda to'xtab qolmay, biroz kutib qayta urinamiz.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function startBot() {
+  for (;;) {
+    try {
+      await bot.launch({
+        allowedUpdates: ['message', 'business_connection', 'business_message'],
+      });
+      return; // bot.stop() chaqirilganda shu yerga keladi
+    } catch (e) {
+      if (/409|Conflict/i.test(e.message || '')) {
+        console.error("409 to'qnashuv: boshqa nusxa ishlayapti, 10 soniyadan keyin qayta urinaman");
+        await sleep(10000);
+        continue;
+      }
+      console.error('Ishga tushmadi:', e.message);
+      process.exit(1);
+    }
+  }
+}
+startBot();
 console.log(
   'Bot ishga tushdi. AI rejimi:',
   AI_ENABLED ? 'yoqilgan (' + PROVIDER + ', ' + MODEL + ')' : "o'chiq (GEMINI_API_KEY yoki ANTHROPIC_API_KEY yo'q)"
