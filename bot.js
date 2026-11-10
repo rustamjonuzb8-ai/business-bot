@@ -100,10 +100,10 @@ setInterval(() => {
 }, 3600 * 1000).unref();
 
 // ---------- AI ----------
-function buildRequest(messages) {
+function buildRequest(messages, model) {
   if (PROVIDER === 'gemini') {
     return {
-      url: 'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent',
+      url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
       body: {
         systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -122,7 +122,7 @@ function buildRequest(messages) {
       'x-api-key': ANTHROPIC_KEY,
       'anthropic-version': '2023-06-01',
     },
-    body: { model: MODEL, max_tokens: 400, system: SYSTEM_PROMPT, messages },
+    body: { model, max_tokens: 400, system: SYSTEM_PROMPT, messages },
   };
 }
 
@@ -138,10 +138,21 @@ function parseResponse(data) {
     .trim();
 }
 
-async function askAI(messages) {
-  const req = buildRequest(messages);
+// Asosiy model band (503) yoki sekin bo'lsa, zaxira modellarga o'tamiz
+const FALLBACK_MODELS = (
+  process.env.AI_FALLBACK_MODELS ||
+  (PROVIDER === 'gemini' ? 'gemini-flash-lite-latest,gemini-2.5-flash' : 'claude-sonnet-5-5')
+)
+  .split(',')
+  .map((x) => x.trim())
+  .filter((x) => x && x !== MODEL);
+const MODELS_TO_TRY = [MODEL, ...FALLBACK_MODELS].slice(0, 3);
+const ATTEMPT_TIMEOUT_MS = 15000;
+
+async function askOnce(messages, model) {
+  const req = buildRequest(messages, model);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 25000);
+  const timer = setTimeout(() => ctrl.abort(), ATTEMPT_TIMEOUT_MS);
   try {
     const r = await fetch(req.url, {
       method: 'POST',
@@ -149,13 +160,26 @@ async function askAI(messages) {
       headers: req.headers,
       body: JSON.stringify(req.body),
     });
-    if (!r.ok) throw new Error('AI HTTP ' + r.status + ' ' + (await r.text()).slice(0, 200));
+    if (!r.ok) throw new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 150));
     const text = parseResponse(await r.json());
-    if (!text) throw new Error("AI bo'sh javob qaytardi");
+    if (!text) throw new Error("AI bo'sh javob qaytardi [" + model + ']');
     return text;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function askAI(messages) {
+  let lastErr;
+  for (const model of MODELS_TO_TRY) {
+    try {
+      return await askOnce(messages, model);
+    } catch (e) {
+      lastErr = e;
+      console.error('AI xato (' + model + '):', e.name === 'AbortError' ? 'vaqt tugadi' : e.message);
+    }
+  }
+  throw lastErr;
 }
 
 // ---------- Yuborish ----------
