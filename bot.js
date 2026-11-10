@@ -289,6 +289,17 @@ bot.catch((err) => console.error('Bot xatosi:', err.message));
 const PORT = process.env.PORT || 3000;
 http.createServer((_, res) => res.end('ok')).listen(PORT);
 
+// Render bepul tarifida bot uxlab qolmasligi uchun o'z manziliga har 10 daqiqada so'rov yuboramiz
+const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL) {
+  setInterval(() => {
+    fetch(SELF_URL, { signal: AbortSignal.timeout(20000) }).catch((e) =>
+      console.error('Self-ping xato:', e.message)
+    );
+  }, 10 * 60 * 1000).unref();
+  console.log('Self-ping yoqilgan:', SELF_URL);
+}
+
 // Yangi deploy paytida eski va yangi nusxa qisqa vaqt birga ishlaydi va Telegram
 // "409 Conflict" qaytaradi. Bunda to'xtab qolmay, biroz kutib qayta urinamiz.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
