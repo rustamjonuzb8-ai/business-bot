@@ -9,8 +9,19 @@ if (!process.env.BOT_TOKEN) {
 const bot = new Telegraf(process.env.BOT_TOKEN);
 // AI provayder: GEMINI_API_KEY bo'lsa Gemini, bo'lmasa ANTHROPIC_API_KEY bo'lsa Claude.
 // Ikkalasi ham yo'q bo'lsa, oddiy kalit so'zli rejim ishlaydi.
-const GEMINI_KEY = process.env.GEMINI_API_KEY;
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+// Bo'sh joy yoki qo'shtirnoq tasodifan qo'shilgan bo'lsa, tozalaymiz
+const clean = (v) => (v || '').trim().replace(/^["']+|["']+$/g, '').trim();
+const GEMINI_KEY = clean(process.env.GEMINI_API_KEY);
+const ANTHROPIC_KEY = clean(process.env.ANTHROPIC_API_KEY);
+
+// Diagnostika: faqat nomlar va uzunlik (qiymat emas)
+console.log(
+  'Env tekshiruvi:',
+  Object.keys(process.env)
+    .filter((k) => /GEMINI|ANTHROPIC|GOOGLE|OWNER|BUSINESS|AI_|API/i.test(k))
+    .map((k) => JSON.stringify(k) + '=' + (process.env[k] || '').length)
+    .join(', ') || 'mos o\'zgaruvchi topilmadi'
+);
 const PROVIDER = GEMINI_KEY ? 'gemini' : ANTHROPIC_KEY ? 'anthropic' : null;
 const AI_ENABLED = Boolean(PROVIDER);
 const MODEL =
