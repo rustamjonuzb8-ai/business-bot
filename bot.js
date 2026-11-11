@@ -47,9 +47,9 @@ const KEYWORDS = [
 const GREET_COOLDOWN_HOURS = 12; // oddiy rejimda qayta salom bermaslik
 const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
 const HUMAN_PAUSE_HOURS = num(process.env.HUMAN_PAUSE_HOURS, 2); // siz o'zingiz yozsangiz, AI shuncha soat jim turadi
-const HISTORY_LIMIT = num(process.env.HISTORY_LIMIT, 30); // AI ga beriladigan oxirgi xabarlar soni
+const HISTORY_LIMIT = num(process.env.HISTORY_LIMIT, 14); // AI ga beriladigan oxirgi xabarlar soni
 const MAX_AI_PER_HOUR = num(process.env.MAX_AI_PER_HOUR, 120); // bitta mijozga soatiga AI javoblari chegarasi
-const HEDGE_MS = num(process.env.HEDGE_MS, 5000); // asosiy model shuncha vaqtda javob bermasa, zaxirasi parallel ishga tushadi
+const HEDGE_MS = num(process.env.HEDGE_MS, 2500); // asosiy model shuncha vaqtda javob bermasa, zaxirasi parallel ishga tushadi
 const FAIL_COOLDOWN_SEC = 90; // AI ishlamaganda uzr xabarini qayta yuborish oralig'i
 const FAIL_TEXT = "Xabaringiz chiqmay qoldi, yana bir marta yozib yuboring.";
 const NO_TEXT_REPLY = "Buni ocholmadim, matn qilib yozib yuboring.";
@@ -109,6 +109,7 @@ setInterval(() => {
 }, 3600 * 1000).unref();
 
 // ---------- AI ----------
+let noThinkingCfg = false; // thinkingConfig 400 xato bersa, true bo'ladi va keyin yuborilmaydi
 function buildRequest(messages, provider, model) {
   return {
     url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
@@ -119,7 +120,10 @@ function buildRequest(messages, provider, model) {
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
       })),
-      generationConfig: { maxOutputTokens: 1000 },
+      // "O'ylash" bosqichi o'chiriladi: javob ancha tez chiqadi. Model qabul qilmasa, o'zi o'chadi.
+      generationConfig: noThinkingCfg
+        ? { maxOutputTokens: 1000 }
+        : { maxOutputTokens: 1000, thinkingConfig: { thinkingBudget: 0 } },
     },
   };
 }
@@ -130,16 +134,31 @@ function parseResponse(data) {
 }
 
 async function askOnce(messages, { provider, model }) {
-  const req = buildRequest(messages, provider, model);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 12000);
+  const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
-    const r = await fetch(req.url, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: req.headers,
-      body: JSON.stringify(req.body),
-    });
+    const call = () => {
+      const req = buildRequest(messages, provider, model);
+      return fetch(req.url, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+      });
+    };
+    let r = await call();
+    if (r.status === 400 && !noThinkingCfg) {
+      const body400 = await r.text();
+      if (/think/i.test(body400)) {
+        noThinkingCfg = true; // bu model thinkingConfig'ni qabul qilmaydi: o'sizsiz qayta yuboramiz
+        console.error('thinkingConfig qabul qilinmadi, o\'chirildi:', body400.slice(0, 200));
+        r = await call();
+      } else {
+        const err = new Error('AI HTTP 400 [' + model + '] ' + body400.slice(0, 400));
+        err.status = 400;
+        throw err;
+      }
+    }
     if (!r.ok) {
       const err = new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 400));
       err.status = r.status;
@@ -160,6 +179,7 @@ const attemptKey = (a) => a.provider + '/' + a.model;
 // Urinishlar ketma-ket: oldingisi xato bersa darrov keyingisi. Oldingisi sekin bo'lsa (HEDGE_MS),
 // keyingisi parallel ishga tushadi va birinchi kelgan javob olinadi. Hech qachon jim qolmaydi.
 function askAI(messages) {
+  const t0 = Date.now();
   const all = ATTEMPTS.slice(0, 5);
   const fresh = all.filter((a) => (badUntil.get(attemptKey(a)) || 0) < Date.now());
   const queue = fresh.length ? fresh : all;
@@ -184,7 +204,7 @@ function askAI(messages) {
           active--;
           if (done) return;
           done = true;
-          console.log('AI javob berdi:', attemptKey(attempt));
+          console.log('AI javob berdi:', attemptKey(attempt), (Date.now() - t0) + 'ms');
           resolve(text);
         })
         .catch((e) => {
@@ -328,7 +348,7 @@ if (SELF_URL) {
     fetch(SELF_URL, { signal: AbortSignal.timeout(20000) }).catch((e) =>
       console.error('Self-ping xato:', e.message)
     );
-  }, 10 * 60 * 1000).unref();
+  }, 4 * 60 * 1000).unref();
   console.log('Self-ping yoqilgan:', SELF_URL);
 }
 
