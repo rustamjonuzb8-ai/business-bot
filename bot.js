@@ -12,31 +12,20 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 // Bo'sh joy yoki qo'shtirnoq tasodifan qo'shilgan bo'lsa, tozalaymiz
 const clean = (v) => (v || '').trim().replace(/^["']+|["']+$/g, '').trim();
 const GEMINI_KEY = clean(process.env.GEMINI_API_KEY);
-const ANTHROPIC_KEY = clean(process.env.ANTHROPIC_API_KEY);
-// Amazon Bedrock (Claude Opus 5.5): AWS_BEARER_TOKEN_BEDROCK bo'lsa, shu birinchi ishlatiladi
-const BEDROCK_KEY = clean(process.env.AWS_BEARER_TOKEN_BEDROCK);
-const BEDROCK_REGION = clean(process.env.AWS_REGION) || 'eu-north-1';
-const BEDROCK_MODEL = clean(process.env.BEDROCK_MODEL_ID) || 'global.anthropic.claude-opus-5-5';
 
 // Diagnostika: faqat nomlar va uzunlik (qiymat emas)
 console.log(
   'Env tekshiruvi:',
   Object.keys(process.env)
-    .filter((k) => /GEMINI|ANTHROPIC|GOOGLE|OWNER|BUSINESS|AI_|API|AWS|BEDROCK/i.test(k))
+    .filter((k) => /GEMINI|GOOGLE|OWNER|BUSINESS|AI_/i.test(k))
     .map((k) => JSON.stringify(k) + '=' + (process.env[k] || '').length)
     .join(', ') || 'mos o\'zgaruvchi topilmadi'
 );
 const uniq = (arr) => [...new Set(arr.map((x) => (x || '').trim()).filter(Boolean))];
-const BEDROCK_FALLBACKS = (
-  clean(process.env.BEDROCK_FALLBACK_MODELS) ||
-  'eu.anthropic.claude-opus-5-5,global.anthropic.claude-sonnet-5-5,global.anthropic.claude-haiku-5-5'
-).split(',');
 
-// Tartib bilan sinaladigan urinishlar: avval Bedrock (Opus), ishlamasa boshqa modellar, oxirida Gemini/Anthropic.
+// Faqat Gemini. Avval tezkor "lite" model, u ishlamasa oddiy flash.
 const ATTEMPTS = [];
-if (BEDROCK_KEY) uniq([BEDROCK_MODEL, ...BEDROCK_FALLBACKS]).forEach((m) => ATTEMPTS.push({ provider: 'bedrock', model: m }));
-if (GEMINI_KEY) uniq([process.env.AI_MODEL || 'gemini-flash-latest', 'gemini-flash-lite-latest']).forEach((m) => ATTEMPTS.push({ provider: 'gemini', model: m }));
-if (ANTHROPIC_KEY) ATTEMPTS.push({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+if (GEMINI_KEY) uniq([process.env.AI_MODEL || 'gemini-flash-lite-latest', 'gemini-flash-latest']).forEach((m) => ATTEMPTS.push({ provider: 'gemini', model: m }));
 const AI_ENABLED = ATTEMPTS.length > 0;
 const PROVIDER = AI_ENABLED ? ATTEMPTS[0].provider : null;
 const MODEL = AI_ENABLED ? ATTEMPTS[0].model : '';
@@ -63,8 +52,7 @@ const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) :
 const HUMAN_PAUSE_HOURS = num(process.env.HUMAN_PAUSE_HOURS, 2); // siz o'zingiz yozsangiz, AI shuncha soat jim turadi
 const HISTORY_LIMIT = num(process.env.HISTORY_LIMIT, 30); // AI ga beriladigan oxirgi xabarlar soni
 const MAX_AI_PER_HOUR = num(process.env.MAX_AI_PER_HOUR, 120); // bitta mijozga soatiga AI javoblari chegarasi
-const HEDGE_MS = num(process.env.HEDGE_MS, 15000); // asosiy model shuncha vaqtda javob bermasa, zaxirasi parallel ishga tushadi
-const BEDROCK_MAX_TOKENS = num(process.env.BEDROCK_MAX_TOKENS, 2000);
+const HEDGE_MS = num(process.env.HEDGE_MS, 5000); // asosiy model shuncha vaqtda javob bermasa, zaxirasi parallel ishga tushadi
 const FAIL_COOLDOWN_SEC = 90; // AI ishlamaganda uzr xabarini qayta yuborish oralig'i
 const FAIL_TEXT =
   "Kechirasiz, hozir javob berishda kechikish bo'ldi. Xabaringiz qabul qilindi, tez orada javob beraman.";
@@ -126,68 +114,29 @@ setInterval(() => {
 
 // ---------- AI ----------
 function buildRequest(messages, provider, model) {
-  if (provider === 'bedrock') {
-    return {
-      url:
-        'https://bedrock-runtime.' + BEDROCK_REGION + '.amazonaws.com/model/' +
-        encodeURIComponent(model) + '/converse',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + BEDROCK_KEY },
-      body: {
-        system: [{ text: SYSTEM_PROMPT }],
-        messages: messages.map((m) => ({ role: m.role, content: [{ text: m.content }] })),
-        inferenceConfig: { maxTokens: BEDROCK_MAX_TOKENS },
-      },
-    };
-  }
-  if (provider === 'gemini') {
-    return {
-      url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
-      body: {
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: messages.map((m) => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
-        })),
-        generationConfig: { maxOutputTokens: 600 },
-      },
-    };
-  }
   return {
-    url: 'https://api.anthropic.com/v1/messages',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': ANTHROPIC_KEY,
-      'anthropic-version': '2023-06-01',
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
+    body: {
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: messages.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      })),
+      generationConfig: { maxOutputTokens: 400 },
     },
-    body: { model, max_tokens: 400, system: SYSTEM_PROMPT, messages },
   };
 }
 
-function parseResponse(data, provider) {
-  if (provider === 'bedrock') {
-    const parts = (data.output && data.output.message && data.output.message.content) || [];
-    return parts
-      .filter((p) => typeof p.text === 'string')
-      .map((p) => p.text)
-      .join('')
-      .trim();
-  }
-  if (provider === 'gemini') {
-    const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-    return parts.map((p) => p.text || '').join('').trim();
-  }
-  return (data.content || [])
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('')
-    .trim();
+function parseResponse(data) {
+  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  return parts.map((p) => p.text || '').join('').trim();
 }
 
 async function askOnce(messages, { provider, model }) {
   const req = buildRequest(messages, provider, model);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), provider === 'bedrock' ? 40000 : 15000);
+  const timer = setTimeout(() => ctrl.abort(), 12000);
   try {
     const r = await fetch(req.url, {
       method: 'POST',
@@ -200,7 +149,7 @@ async function askOnce(messages, { provider, model }) {
       err.status = r.status;
       throw err;
     }
-    const text = parseResponse(await r.json(), provider);
+    const text = parseResponse(await r.json());
     if (!text) throw new Error("AI bo'sh javob qaytardi [" + model + ']');
     return text;
   } finally {
@@ -411,7 +360,7 @@ async function startBot() {
 startBot();
 console.log(
   'Bot ishga tushdi. AI rejimi:',
-  AI_ENABLED ? 'yoqilgan (' + PROVIDER + ', ' + MODEL + ')' : "o'chiq (AWS_BEARER_TOKEN_BEDROCK, GEMINI_API_KEY yoki ANTHROPIC_API_KEY yo'q)"
+  AI_ENABLED ? 'yoqilgan (' + PROVIDER + ', ' + MODEL + ')' : "o'chiq (GEMINI_API_KEY yo'q)"
 );
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
