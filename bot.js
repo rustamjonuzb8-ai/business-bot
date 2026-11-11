@@ -22,7 +22,7 @@ const BEDROCK_MODEL = clean(process.env.BEDROCK_MODEL_ID) || 'global.anthropic.c
 console.log(
   'Env tekshiruvi:',
   Object.keys(process.env)
-    .filter((k) => /GEMINI|ANTHROPIC|GOOGLE|OWNER|BUSINESS|AI_|API/i.test(k))
+    .filter((k) => /GEMINI|ANTHROPIC|GOOGLE|OWNER|BUSINESS|AI_|API|AWS|BEDROCK/i.test(k))
     .map((k) => JSON.stringify(k) + '=' + (process.env[k] || '').length)
     .join(', ') || 'mos o\'zgaruvchi topilmadi'
 );
@@ -59,9 +59,17 @@ const KEYWORDS = [
 ];
 
 const GREET_COOLDOWN_HOURS = 12; // oddiy rejimda qayta salom bermaslik
-const HUMAN_PAUSE_HOURS = 6;     // siz o'zingiz yozsangiz, AI shuncha soat jim turadi
-const HISTORY_LIMIT = 12;        // AI ga beriladigan oxirgi xabarlar soni
-const MAX_AI_PER_HOUR = 30;      // bitta mijozga soatiga AI javoblari chegarasi
+const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+const HUMAN_PAUSE_HOURS = num(process.env.HUMAN_PAUSE_HOURS, 2); // siz o'zingiz yozsangiz, AI shuncha soat jim turadi
+const HISTORY_LIMIT = num(process.env.HISTORY_LIMIT, 30); // AI ga beriladigan oxirgi xabarlar soni
+const MAX_AI_PER_HOUR = num(process.env.MAX_AI_PER_HOUR, 120); // bitta mijozga soatiga AI javoblari chegarasi
+const HEDGE_MS = num(process.env.HEDGE_MS, 15000); // asosiy model shuncha vaqtda javob bermasa, zaxirasi parallel ishga tushadi
+const BEDROCK_MAX_TOKENS = num(process.env.BEDROCK_MAX_TOKENS, 2000);
+const FAIL_COOLDOWN_SEC = 90; // AI ishlamaganda uzr xabarini qayta yuborish oralig'i
+const FAIL_TEXT =
+  "Kechirasiz, hozir javob berishda kechikish bo'ldi. Xabaringiz qabul qilindi, tez orada javob beraman.";
+const NO_TEXT_REPLY =
+  "Xabaringiz qabul qilindi. Iltimos, savolingizni matn bilan yozing, tez javob beraman.";
 // =================================================================
 
 const SYSTEM_PROMPT = `Sen ${OWNER_NAME}ning Telegramdagi AI yordamchisisan. Mijozlar ${OWNER_NAME}ga yozganda, sen ${OWNER_NAME} nomidan javob berasan.
@@ -123,7 +131,7 @@ function buildRequest(messages, provider, model) {
       body: {
         system: [{ text: SYSTEM_PROMPT }],
         messages: messages.map((m) => ({ role: m.role, content: [{ text: m.content }] })),
-        inferenceConfig: { maxTokens: 1000 },
+        inferenceConfig: { maxTokens: BEDROCK_MAX_TOKENS },
       },
     };
   }
@@ -183,7 +191,11 @@ async function askOnce(messages, { provider, model }) {
       headers: req.headers,
       body: JSON.stringify(req.body),
     });
-    if (!r.ok) throw new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 400));
+    if (!r.ok) {
+      const err = new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 400));
+      err.status = r.status;
+      throw err;
+    }
     const text = parseResponse(await r.json(), provider);
     if (!text) throw new Error("AI bo'sh javob qaytardi [" + model + ']');
     return text;
@@ -192,20 +204,52 @@ async function askOnce(messages, { provider, model }) {
   }
 }
 
-// Asosiy model ishlamasa (ruxsat yo'q, band, sekin), keyingisiga o'tamiz. Eng ko'pi bilan 5 urinish.
-async function askAI(messages) {
-  let lastErr;
-  for (const attempt of ATTEMPTS.slice(0, 5)) {
-    try {
-      const text = await askOnce(messages, attempt);
-      console.log('AI javob berdi:', attempt.provider, attempt.model);
-      return text;
-    } catch (e) {
-      lastErr = e;
-      console.error('AI xato (' + attempt.provider + '/' + attempt.model + '):', e.name === 'AbortError' ? 'vaqt tugadi' : e.message);
-    }
-  }
-  throw lastErr;
+// Ruxsat yo'q (403/404) bo'lgan modellarni 10 daqiqaga o'tkazib yuboramiz (vaqt tejaladi)
+const badUntil = new Map();
+const attemptKey = (a) => a.provider + '/' + a.model;
+
+// Urinishlar ketma-ket: oldingisi xato bersa darrov keyingisi. Oldingisi sekin bo'lsa (HEDGE_MS),
+// keyingisi parallel ishga tushadi va birinchi kelgan javob olinadi. Hech qachon jim qolmaydi.
+function askAI(messages) {
+  const all = ATTEMPTS.slice(0, 5);
+  const fresh = all.filter((a) => (badUntil.get(attemptKey(a)) || 0) < Date.now());
+  const queue = fresh.length ? fresh : all;
+  return new Promise((resolve, reject) => {
+    let idx = 0, active = 0, done = false, lastErr = new Error('AI urinishlari yo\'q');
+    const launch = () => {
+      if (done) return;
+      if (idx >= queue.length) {
+        if (active === 0) reject(lastErr);
+        return;
+      }
+      const attempt = queue[idx++];
+      active++;
+      let spawned = false;
+      const spawn = () => {
+        if (!spawned) { spawned = true; launch(); }
+      };
+      const hedge = setTimeout(spawn, HEDGE_MS);
+      askOnce(messages, attempt)
+        .then((text) => {
+          clearTimeout(hedge);
+          active--;
+          if (done) return;
+          done = true;
+          console.log('AI javob berdi:', attemptKey(attempt));
+          resolve(text);
+        })
+        .catch((e) => {
+          clearTimeout(hedge);
+          active--;
+          lastErr = e;
+          if (e.status === 403 || e.status === 404) badUntil.set(attemptKey(attempt), Date.now() + 10 * 60 * 1000);
+          console.error('AI xato (' + attemptKey(attempt) + '):', e.name === 'AbortError' ? 'vaqt tugadi' : e.message);
+          spawn();
+          if (!done && idx >= queue.length && active === 0) reject(lastErr);
+        });
+    };
+    launch();
+  });
 }
 
 // ---------- Yuborish ----------
@@ -229,7 +273,15 @@ function pickFallback(text) {
   return { text: GREETING, keyword: false };
 }
 
+async function aiFallbackReply(st, connId, chatId, text) {
+  // AI rejimida: keyword placeholderlari emas, uzr xabari; 90 soniyada bir martadan ko'p emas
+  if (Date.now() - (st.lastFail || 0) < FAIL_COOLDOWN_SEC * 1000) return;
+  st.lastFail = Date.now();
+  await sendReply(connId, chatId, text ? FAIL_TEXT : NO_TEXT_REPLY);
+}
+
 async function fallbackReply(st, connId, chatId, text) {
+  if (AI_ENABLED) return aiFallbackReply(st, connId, chatId, text);
   const { text: reply, keyword } = pickFallback(text);
   if (!keyword && Date.now() - st.lastGreet < GREET_COOLDOWN_HOURS * 3600 * 1000) return;
   await sendReply(connId, chatId, reply);
@@ -264,9 +316,12 @@ async function handleBusinessMessage(m) {
     st.aiTimes = st.aiTimes.filter((t) => now - t < 3600 * 1000);
     if (st.aiTimes.length < MAX_AI_PER_HOUR) {
       st.aiTimes.push(now);
-      bot.telegram
-        .callApi('sendChatAction', { business_connection_id: connId, chat_id: chatId, action: 'typing' })
-        .catch(() => {});
+      const typing = () =>
+        bot.telegram
+          .callApi('sendChatAction', { business_connection_id: connId, chat_id: chatId, action: 'typing' })
+          .catch(() => {});
+      typing();
+      const typingTimer = setInterval(typing, 4000);
       try {
         const answer = await askAI(historyForAI(st));
         await sendReply(connId, chatId, answer);
@@ -274,7 +329,9 @@ async function handleBusinessMessage(m) {
         return;
       } catch (e) {
         console.error('AI xato:', e.message);
-        // AI ishlamadi: oddiy javobga o'tamiz
+        // AI ishlamadi: uzr xabari yuboriladi (pastda)
+      } finally {
+        clearInterval(typingTimer);
       }
     }
   }
