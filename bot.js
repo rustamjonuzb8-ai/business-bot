@@ -13,6 +13,10 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const clean = (v) => (v || '').trim().replace(/^["']+|["']+$/g, '').trim();
 const GEMINI_KEY = clean(process.env.GEMINI_API_KEY);
 const ANTHROPIC_KEY = clean(process.env.ANTHROPIC_API_KEY);
+// Amazon Bedrock (Claude Opus 5.5): AWS_BEARER_TOKEN_BEDROCK bo'lsa, shu birinchi ishlatiladi
+const BEDROCK_KEY = clean(process.env.AWS_BEARER_TOKEN_BEDROCK);
+const BEDROCK_REGION = clean(process.env.AWS_REGION) || 'eu-north-1';
+const BEDROCK_MODEL = clean(process.env.BEDROCK_MODEL_ID) || 'global.anthropic.claude-opus-5-5';
 
 // Diagnostika: faqat nomlar va uzunlik (qiymat emas)
 console.log(
@@ -22,11 +26,12 @@ console.log(
     .map((k) => JSON.stringify(k) + '=' + (process.env[k] || '').length)
     .join(', ') || 'mos o\'zgaruvchi topilmadi'
 );
-const PROVIDER = GEMINI_KEY ? 'gemini' : ANTHROPIC_KEY ? 'anthropic' : null;
+const PROVIDER = BEDROCK_KEY ? 'bedrock' : GEMINI_KEY ? 'gemini' : ANTHROPIC_KEY ? 'anthropic' : null;
 const AI_ENABLED = Boolean(PROVIDER);
 const MODEL =
-  process.env.AI_MODEL ||
-  (PROVIDER === 'gemini' ? 'gemini-flash-latest' : 'claude-haiku-5-5');
+  PROVIDER === 'bedrock'
+    ? BEDROCK_MODEL
+    : process.env.AI_MODEL || (PROVIDER === 'gemini' ? 'gemini-flash-latest' : 'claude-haiku-5-5');
 
 // ================= SHU YERNI O'ZINGIZGA MOSLANG =================
 const OWNER_NAME = process.env.OWNER_NAME || 'egasi';
@@ -101,6 +106,19 @@ setInterval(() => {
 
 // ---------- AI ----------
 function buildRequest(messages, model) {
+  if (PROVIDER === 'bedrock') {
+    return {
+      url:
+        'https://bedrock-runtime.' + BEDROCK_REGION + '.amazonaws.com/model/' +
+        encodeURIComponent(model) + '/converse',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + BEDROCK_KEY },
+      body: {
+        system: [{ text: SYSTEM_PROMPT }],
+        messages: messages.map((m) => ({ role: m.role, content: [{ text: m.content }] })),
+        inferenceConfig: { maxTokens: 1000 },
+      },
+    };
+  }
   if (PROVIDER === 'gemini') {
     return {
       url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
@@ -127,6 +145,14 @@ function buildRequest(messages, model) {
 }
 
 function parseResponse(data) {
+  if (PROVIDER === 'bedrock') {
+    const parts = (data.output && data.output.message && data.output.message.content) || [];
+    return parts
+      .filter((p) => typeof p.text === 'string')
+      .map((p) => p.text)
+      .join('')
+      .trim();
+  }
   if (PROVIDER === 'gemini') {
     const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
     return parts.map((p) => p.text || '').join('').trim();
@@ -141,13 +167,13 @@ function parseResponse(data) {
 // Asosiy model band (503) yoki sekin bo'lsa, zaxira modellarga o'tamiz
 const FALLBACK_MODELS = (
   process.env.AI_FALLBACK_MODELS ||
-  (PROVIDER === 'gemini' ? 'gemini-flash-lite-latest,gemini-2.5-flash' : 'claude-sonnet-5-5')
+  (PROVIDER === 'bedrock' ? '' : PROVIDER === 'gemini' ? 'gemini-flash-lite-latest,gemini-2.5-flash' : 'claude-sonnet-5-5')
 )
   .split(',')
   .map((x) => x.trim())
   .filter((x) => x && x !== MODEL);
 const MODELS_TO_TRY = [MODEL, ...FALLBACK_MODELS].slice(0, 3);
-const ATTEMPT_TIMEOUT_MS = 15000;
+const ATTEMPT_TIMEOUT_MS = PROVIDER === 'bedrock' ? 40000 : 15000; // Opus fikrlashi uchun ko'proq vaqt
 
 async function askOnce(messages, model) {
   const req = buildRequest(messages, model);
@@ -324,7 +350,7 @@ async function startBot() {
 startBot();
 console.log(
   'Bot ishga tushdi. AI rejimi:',
-  AI_ENABLED ? 'yoqilgan (' + PROVIDER + ', ' + MODEL + ')' : "o'chiq (GEMINI_API_KEY yoki ANTHROPIC_API_KEY yo'q)"
+  AI_ENABLED ? 'yoqilgan (' + PROVIDER + ', ' + MODEL + ')' : "o'chiq (AWS_BEARER_TOKEN_BEDROCK, GEMINI_API_KEY yoki ANTHROPIC_API_KEY yo'q)"
 );
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
