@@ -26,12 +26,20 @@ console.log(
     .map((k) => JSON.stringify(k) + '=' + (process.env[k] || '').length)
     .join(', ') || 'mos o\'zgaruvchi topilmadi'
 );
-const PROVIDER = BEDROCK_KEY ? 'bedrock' : GEMINI_KEY ? 'gemini' : ANTHROPIC_KEY ? 'anthropic' : null;
-const AI_ENABLED = Boolean(PROVIDER);
-const MODEL =
-  PROVIDER === 'bedrock'
-    ? BEDROCK_MODEL
-    : process.env.AI_MODEL || (PROVIDER === 'gemini' ? 'gemini-flash-latest' : 'claude-haiku-5-5');
+const uniq = (arr) => [...new Set(arr.map((x) => (x || '').trim()).filter(Boolean))];
+const BEDROCK_FALLBACKS = (
+  clean(process.env.BEDROCK_FALLBACK_MODELS) ||
+  'eu.anthropic.claude-opus-5-5,global.anthropic.claude-sonnet-5-5,global.anthropic.claude-haiku-5-5'
+).split(',');
+
+// Tartib bilan sinaladigan urinishlar: avval Bedrock (Opus), ishlamasa boshqa modellar, oxirida Gemini/Anthropic.
+const ATTEMPTS = [];
+if (BEDROCK_KEY) uniq([BEDROCK_MODEL, ...BEDROCK_FALLBACKS]).forEach((m) => ATTEMPTS.push({ provider: 'bedrock', model: m }));
+if (GEMINI_KEY) uniq([process.env.AI_MODEL || 'gemini-flash-latest', 'gemini-flash-lite-latest']).forEach((m) => ATTEMPTS.push({ provider: 'gemini', model: m }));
+if (ANTHROPIC_KEY) ATTEMPTS.push({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+const AI_ENABLED = ATTEMPTS.length > 0;
+const PROVIDER = AI_ENABLED ? ATTEMPTS[0].provider : null;
+const MODEL = AI_ENABLED ? ATTEMPTS[0].model : '';
 
 // ================= SHU YERNI O'ZINGIZGA MOSLANG =================
 const OWNER_NAME = process.env.OWNER_NAME || 'egasi';
@@ -105,8 +113,8 @@ setInterval(() => {
 }, 3600 * 1000).unref();
 
 // ---------- AI ----------
-function buildRequest(messages, model) {
-  if (PROVIDER === 'bedrock') {
+function buildRequest(messages, provider, model) {
+  if (provider === 'bedrock') {
     return {
       url:
         'https://bedrock-runtime.' + BEDROCK_REGION + '.amazonaws.com/model/' +
@@ -119,7 +127,7 @@ function buildRequest(messages, model) {
       },
     };
   }
-  if (PROVIDER === 'gemini') {
+  if (provider === 'gemini') {
     return {
       url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
@@ -144,8 +152,8 @@ function buildRequest(messages, model) {
   };
 }
 
-function parseResponse(data) {
-  if (PROVIDER === 'bedrock') {
+function parseResponse(data, provider) {
+  if (provider === 'bedrock') {
     const parts = (data.output && data.output.message && data.output.message.content) || [];
     return parts
       .filter((p) => typeof p.text === 'string')
@@ -153,7 +161,7 @@ function parseResponse(data) {
       .join('')
       .trim();
   }
-  if (PROVIDER === 'gemini') {
+  if (provider === 'gemini') {
     const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
     return parts.map((p) => p.text || '').join('').trim();
   }
@@ -164,21 +172,10 @@ function parseResponse(data) {
     .trim();
 }
 
-// Asosiy model band (503) yoki sekin bo'lsa, zaxira modellarga o'tamiz
-const FALLBACK_MODELS = (
-  process.env.AI_FALLBACK_MODELS ||
-  (PROVIDER === 'bedrock' ? '' : PROVIDER === 'gemini' ? 'gemini-flash-lite-latest,gemini-2.5-flash' : 'claude-sonnet-5-5')
-)
-  .split(',')
-  .map((x) => x.trim())
-  .filter((x) => x && x !== MODEL);
-const MODELS_TO_TRY = [MODEL, ...FALLBACK_MODELS].slice(0, 3);
-const ATTEMPT_TIMEOUT_MS = PROVIDER === 'bedrock' ? 40000 : 15000; // Opus fikrlashi uchun ko'proq vaqt
-
-async function askOnce(messages, model) {
-  const req = buildRequest(messages, model);
+async function askOnce(messages, { provider, model }) {
+  const req = buildRequest(messages, provider, model);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ATTEMPT_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), provider === 'bedrock' ? 40000 : 15000);
   try {
     const r = await fetch(req.url, {
       method: 'POST',
@@ -186,8 +183,8 @@ async function askOnce(messages, model) {
       headers: req.headers,
       body: JSON.stringify(req.body),
     });
-    if (!r.ok) throw new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 150));
-    const text = parseResponse(await r.json());
+    if (!r.ok) throw new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 400));
+    const text = parseResponse(await r.json(), provider);
     if (!text) throw new Error("AI bo'sh javob qaytardi [" + model + ']');
     return text;
   } finally {
@@ -195,14 +192,17 @@ async function askOnce(messages, model) {
   }
 }
 
+// Asosiy model ishlamasa (ruxsat yo'q, band, sekin), keyingisiga o'tamiz. Eng ko'pi bilan 5 urinish.
 async function askAI(messages) {
   let lastErr;
-  for (const model of MODELS_TO_TRY) {
+  for (const attempt of ATTEMPTS.slice(0, 5)) {
     try {
-      return await askOnce(messages, model);
+      const text = await askOnce(messages, attempt);
+      console.log('AI javob berdi:', attempt.provider, attempt.model);
+      return text;
     } catch (e) {
       lastErr = e;
-      console.error('AI xato (' + model + '):', e.name === 'AbortError' ? 'vaqt tugadi' : e.message);
+      console.error('AI xato (' + attempt.provider + '/' + attempt.model + '):', e.name === 'AbortError' ? 'vaqt tugadi' : e.message);
     }
   }
   throw lastErr;
