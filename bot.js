@@ -24,7 +24,7 @@ const uniq = (arr) => [...new Set(arr.map((x) => (x || '').trim()).filter(Boolea
 
 // Faqat Gemini. Avval tezkor "lite" model, u ishlamasa oddiy flash.
 const ATTEMPTS = [];
-if (GEMINI_KEY) uniq([process.env.AI_MODEL || 'gemini-flash-lite-latest', 'gemini-flash-latest']).forEach((m) => ATTEMPTS.push({ provider: 'gemini', model: m }));
+if (GEMINI_KEY) uniq([process.env.AI_MODEL || 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.5-flash']).forEach((m) => ATTEMPTS.push({ provider: 'gemini', model: m }));
 const AI_ENABLED = ATTEMPTS.length > 0;
 const PROVIDER = AI_ENABLED ? ATTEMPTS[0].provider : null;
 const MODEL = AI_ENABLED ? ATTEMPTS[0].model : '';
@@ -109,7 +109,7 @@ setInterval(() => {
 }, 3600 * 1000).unref();
 
 // ---------- AI ----------
-let noThinkingCfg = false; // thinkingConfig 400 xato bersa, true bo'ladi va keyin yuborilmaydi
+const noThink = new Set(); // thinkingConfig 400 bergan modellar: ularga keyin yuborilmaydi
 function buildRequest(messages, provider, model) {
   return {
     url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
@@ -121,7 +121,7 @@ function buildRequest(messages, provider, model) {
         parts: [{ text: m.content }],
       })),
       // "O'ylash" bosqichi o'chiriladi: javob ancha tez chiqadi. Model qabul qilmasa, o'zi o'chadi.
-      generationConfig: noThinkingCfg
+      generationConfig: noThink.has(model)
         ? { maxOutputTokens: 1000 }
         : { maxOutputTokens: 1000, thinkingConfig: { thinkingBudget: 0 } },
     },
@@ -147,17 +147,10 @@ async function askOnce(messages, { provider, model }) {
       });
     };
     let r = await call();
-    if (r.status === 400 && !noThinkingCfg) {
-      const body400 = await r.text();
-      if (/think/i.test(body400)) {
-        noThinkingCfg = true; // bu model thinkingConfig'ni qabul qilmaydi: o'sizsiz qayta yuboramiz
-        console.error('thinkingConfig qabul qilinmadi, o\'chirildi:', body400.slice(0, 200));
-        r = await call();
-      } else {
-        const err = new Error('AI HTTP 400 [' + model + '] ' + body400.slice(0, 400));
-        err.status = 400;
-        throw err;
-      }
+    if (r.status === 400 && !noThink.has(model)) {
+      noThink.add(model); // ehtimol thinkingConfig sababli: shu modelga endi yubormaymiz va darrov qayta urinamiz
+      console.error('400 xato, thinkingsiz qayta urinaman [' + model + ']');
+      r = await call();
     }
     if (!r.ok) {
       const err = new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 400));
@@ -292,7 +285,13 @@ async function handleBusinessMessage(m) {
       typing();
       const typingTimer = setInterval(typing, 4000);
       try {
-        const answer = await askAI(historyForAI(st));
+        let answer;
+        try {
+          answer = await askAI(historyForAI(st));
+        } catch (e1) {
+          await new Promise((r) => setTimeout(r, 1000)); // Google band bo'lsa, 1 soniyadan keyin yana bir urinish
+          answer = await askAI(historyForAI(st));
+        }
         await sendReply(connId, chatId, answer);
         addHistory(st, 'assistant', answer);
         return;
