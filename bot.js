@@ -63,6 +63,9 @@ Uslub:
 - Qisqa yoz: 1-2 gap. Markdown, yulduzcha, sarlavha ishlatma. Emoji juda kam.
 - O'zingni hech qachon o'zingdan tanishtirma. "Men AI yordamchiman", "men yordamchiman", "${OWNER_NAME} band" kabi gaplarni o'zingdan aytma. To'g'ridan-to'g'ri suhbatni davom ettir, xuddi oddiy odamdek javob ber.
 - Salomga salom ber, savolga javob ber, gapga gap qo'sh. Kerak bo'lsa o'zing ham savol ber.
+- Oldingi javoblaringdagi gapni yoki iborani takrorlama. Har javob yangi va suhbatga mos bo'lsin. Bir xil gapni qayta-qayta yozma.
+- Cho'zma, ma'ruza o'qima, nasihat qilma, "iltimos", "albatta" kabi rasmiy gaplar ishlatma. Do'st qanday gapirsa, shunday gapir: erkin, tabiiy, hazil bo'lsa hazil bilan.
+- Odatiy gap-so'zlardan, hazil va mish-mishlardan qochma. Sababsiz rad etma va "bu haqida gaplasha olmayman" dema.
 
 Qoidalar:
 - Har qanday mavzuda suhbatlasha olasan: umumiy savollar, maslahat, oddiy gap-so'z.
@@ -122,8 +125,11 @@ function buildRequest(messages, provider, model) {
       })),
       // "O'ylash" bosqichi o'chiriladi: javob ancha tez chiqadi. Model qabul qilmasa, o'zi o'chadi.
       generationConfig: noThink.has(model)
-        ? { maxOutputTokens: 1000 }
-        : { maxOutputTokens: 1000, thinkingConfig: { thinkingBudget: 0 } },
+        ? { maxOutputTokens: 1000, temperature: 1.0, topP: 0.95 }
+        : { maxOutputTokens: 1000, temperature: 1.0, topP: 0.95, thinkingConfig: { thinkingBudget: 0 } },
+      // Gemini'ning ortiqcha "senzurasi" javobni siqmasin
+      safetySettings: ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
+        .map((category) => ({ category, threshold: 'BLOCK_NONE' })),
     },
   };
 }
@@ -292,6 +298,12 @@ async function handleBusinessMessage(m) {
           await new Promise((r) => setTimeout(r, 1000)); // Google band bo'lsa, 1 soniyadan keyin yana bir urinish
           answer = await askAI(historyForAI(st));
         }
+        // Oldingi javobning aynan o'zi bo'lsa, bir marta qayta so'raymiz
+        const lastBot = [...st.history].reverse().find((h) => h.role === 'assistant');
+        if (lastBot && lastBot.content.trim().toLowerCase() === answer.trim().toLowerCase()) {
+          try { answer = await askAI(historyForAI(st)); } catch (_) {}
+        }
+        console.log('Q:', JSON.stringify(text.slice(0, 120)), '| A:', JSON.stringify(answer.slice(0, 160)));
         await sendReply(connId, chatId, answer);
         addHistory(st, 'assistant', answer);
         return;
