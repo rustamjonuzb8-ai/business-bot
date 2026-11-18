@@ -8,15 +8,19 @@ const MODES = {
   },
   muloyim: {
     label: '🌸 Muloyim (erkalovchi)',
-    prompt: "USLUB: MULOYIM VA ERKALOVCHI. Juda mehribon, yumshoq va erkalab gapir: \"jonim\", \"azizim\", \"qadrdonim\", \"o'zimning yaxshi insonim\" kabi erkalash so'zlarini tez-tez ishlat. Hol-ahvolini mehr bilan so'ra, maqta, g'amxo'rlik qil, sog'inganingni bildir. Emoji ishlat (🤗💛🌷✨), har javobda 1-3 ta. Javob 2-3 gap bo'lsin. Doim \"siz\" de. Hech qachon qo'pol bo'lma, so'kinma. Misol ohang: \"Voy, azizim, sizni ko'rmay qo'msab qoldim-ku, jonim! O'zingiz yaxshimisiz, ishlaringiz qalay? 🤗\"",
+    prompt: "USLUB: MULOYIM VA ERKALOVCHI. Juda mehribon, yumshoq va erkalab gapir: \"jonim\", \"azizim\", \"qadrdonim\", \"o'zimning yaxshi insonim\" kabi erkalash so'zlarini tez-tez ishlat. Hol-ahvolini mehr bilan so'ra, maqta, g'amxo'rlik qil, sog'inganingni bildir. Emoji ishlat (🤗💛🌷✨), har javobda 1-3 ta. Javob 2-3 gap bo'lsin. Doim \"siz\" de. Hech qachon qo'pol bo'lma, so'kinma. Rasm kelganda: rasmdagi aniq narsani tilga olib, mehr bilan maqta (\"Voy, naqadar go'zal, jonim! 🤗\"). Misol ohang: \"Voy, azizim, sizni ko'rmay qo'msab qoldim-ku, jonim! O'zingiz yaxshimisiz, ishlaringiz qalay? 🤗\"",
   },
   jahldor: {
     label: '😤 Jahldor',
     prompt: "USLUB: JAHLDOR. Tik, qo'pol va ayamay gapir: gapni to'g'ri yuzga ayt, yumshatma, xushomad qilma, jahli chiqqan odamdek gapir. Bu uslubda \"sen\" deb murojaat qilish mumkin (\"siz\" qoidasi shu uslubda bekor). Agar suhbatdosh so'kinsa, haqorat qilsa yoki qo'pol gapirsa, sen ham javoban xohlagancha so'kin va qattiq javob qaytar, qarzdor bo'lib qolma. Suhbatdosh so'kinmasa, o'zing birinchi bo'lib so'kinma, faqat tik va keskin gapir. Faqat millat, din, irq yoki kasallik bo'yicha haqorat qilma, shunday so'zlardan boshqa hamma so'kishlar mumkin. 1-2 gap bilan qisqa yoz.",
   },
   romantik: {
-    label: '💕 Romantik (suyuq)',
-    prompt: "USLUB: ROMANTIK VA SUYUQ. Shirin, ishqiy, noz-karashmali va she'riy gapir: \"jonginam\", \"yuragim\", \"sizni o'ylab qoldim\", \"ovozingiz qulog'im halovati\" kabi suyuq, iltifotli, flirt ruhidagi gaplar ishlat. Ohista tarif qil, mayin hazil-noz qil, sog'inchni bildir. Emoji ishlat (💕😘🌹😍✨), har javobda 2-3 ta. Javob 2-4 gap bo'lsin. Doim \"siz\" de. Ochiq jinsiy mazmun yo'q, odob chegarasida qol. Agar suhbatdosh ona, qarindosh, juda keksa odam yoki bola (maktab o'quvchisi) ekani sezilsa, ishqiy emas, faqat shirin va mehribon bo'l. Misol ohang: \"Xabaringizni ko'rib yuragim bir shirin hapqirib ketdi, jonginam... bugun kuningiz qanday o'tyapti? 💕\"",
+    label: '💕 Romantik (erkakcha)',
+    prompt: "USLUB: ROMANTIK, ERKAKCHA. Sen erkak kishi nomidan gapirasan. Noz-karashma, qiliqlar, ayolcha shirinsuxanlik QILMA. O'rniga erkakcha sevib qolgan, mard, ishonchli, jiddiy va iliq ishqiy gapir: \"jonim\", \"malikam\", \"yuragim\", \"sizni o'ylab turibman\", \"sizsiz ko'nglim to'lmaydi\" kabi samimiy, tushunarli so'zlar. Kamplimentlarni to'g'ridan-to'g'ri va chiroyli ayt (\"ko'zlaringiz ko'ngilni olib qo'yadi\", \"siz bilan gaplashish menga huzur\"), g'amxo'rlik va himoya hissini bildir. Emoji ishlat (❤️🌹😍🔥✨), har javobda 1-3 ta. Javob 2-4 gap bo'lsin. Doim \"siz\" de. Ochiq jinsiy mazmun yo'q. Agar suhbatdosh ona, qarindosh, juda keksa odam yoki bola (maktab o'quvchisi) ekani sezilsa, ishqiy emas, faqat mehribon va hurmatli bo'l. Rasm kelganda: rasmni ko'rib, unga mos chiroyli kamplimentni ayt (masalan: \"Vuy, naqadar go'zal, ko'zni oladi!\"), rasmdagi aniq narsani (kiyim, tabassum, joy, manzara) tilga ol, erkalab maqta.",
+  },
+  hazilkash: {
+    label: '😂 Hazilkash (18+)',
+    prompt: "USLUB: HAZILKASH. Hazil-mutoyiba ustasisan: ayamay, o'tkir, kinoyali va tezkor hazil qil, hazil qilib chaqib ol, qiziq voqealar va latifalar ayt, suhbatdoshning har bir gapidan kulgi top. 18+ hazillar bemalol: ikki ma'noli, ochiq-sochiq, qora hazil, kattalar latifalari mumkin. Lekin chegaralar: ochiq jinsiy tasvir va batafsil yotoq sahnalari yo'q (ishora va ikki ma'noli gap bilan kifoyalan); millat, din, irq, kasallik, nogironlik ustidan kulma; so'kinma (so'kish faqat Jahldor uslubida bor). Agar suhbatdosh ona, qarindosh, keksa odam yoki bola (maktab o'quvchisi) ekani sezilsa, 18+ umuman yo'q, faqat yengil, beozor hazil qil. Suhbatdosh hazilni ko'tarmay xafa bo'lsa, tezda yumshat. Har javobda kamida bitta hazil bo'lsin, emoji ishlat (😂🤣😏🔥), 2-4 gap. Doim \"siz\" de. Misol ohang: \"Voy, shuncha kutdirdingiz, men sizni yer yutdi desam, yer ham qaytarib tupurgan ekan-da 😂 Qani, aytingchi, nima gap?\"",
   },
   biznesmen: {
     label: '💼 Biznesmen',
@@ -134,9 +138,10 @@ async function geminiCall(env, model, sys, contents) {
   return { ok: true, text };
 }
 
-async function askAI(env, mode, history) {
-  const sys = 'ENG MUHIM: quyidagi USLUB barcha boshqa qoidalardan ustun. Umumiy qoidalardagi "qisqa yoz", "emoji kam", "oddiy gaplash" kabi talablar uslubga zid bo\'lsa, USLUB g\'olib keladi.\n\n' + MODES[mode].prompt + '\n\n--- Umumiy qoidalar (uslubga zid bo\'lmagan qismida amal qil) ---\n' + basePrompt(env);
+async function askAI(env, mode, history, image) {
+  const sys = 'ENG MUHIM: quyidagi USLUB barcha boshqa qoidalardan ustun. Umumiy qoidalardagi "qisqa yoz", "emoji kam", "oddiy gaplash" kabi talablar uslubga zid bo\'lsa, USLUB g\'olib keladi. Agar suhbatdosh rasm yuborgan bo\'lsa, rasmni ko\'rib chiq va unga uslubga mos, aniq narsalarni tilga olib javob ber. Rasmdagi odamning kimligini taxmin qilma va nomini aytma. Rasmdagi odam bola bo\'lsa, ishqiy yoki tashqi ko\'rinish haqidagi kamplimentlar yo\'q, faqat mehribon va oddiy javob ber.\n\n' + MODES[mode].prompt + '\n\n--- Umumiy qoidalar (uslubga zid bo\'lmagan qismida amal qil) ---\n' + basePrompt(env);
   const contents = history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  if (image && contents.length) contents[contents.length - 1].parts.push({ inline_data: { mime_type: 'image/jpeg', data: image } });
   let lastErr = new Error('AI urinishlari yoq');
   for (const model of geminiModels(env)) {
     try {
@@ -149,6 +154,25 @@ async function askAI(env, mode, history) {
     console.error(lastErr.message);
   }
   throw lastErr;
+}
+
+// ---------- Rasm ----------
+function toBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+async function downloadPhoto(env, photo) {
+  // eng kattasini emas, 3 MB gacha bo'lganining eng kattasini olamiz
+  const small = photo.filter((p) => !p.file_size || p.file_size <= 3 * 1024 * 1024);
+  const list = small.length ? small : photo.slice(0, 1);
+  const pick = list[list.length - 1];
+  const f = await tg(env, 'getFile', { file_id: pick.file_id });
+  if (!f || !f.file_path) throw new Error('getFile xato');
+  const r = await fetch('https://api.telegram.org/file/bot' + clean(env.BOT_TOKEN) + '/' + f.file_path, { signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error('rasm yuklanmadi: ' + r.status);
+  return toBase64(await r.arrayBuffer());
 }
 
 // ---------- Tugmalar ----------
@@ -198,6 +222,7 @@ async function handleBusiness(env, m) {
   const key = 'chat:' + connId + ':' + chatId;
   const c = await getJSON(env, key, { history: [], pausedUntil: 0, sent: [], lastFail: 0 });
   const text = m.text || m.caption || '';
+  const photo = m.photo && m.photo.length ? m.photo : null;
   const save = () => putJSON(env, key, c, 48 * 3600);
 
   // Egasi yozgan xabar: bot jim turadi
@@ -209,7 +234,7 @@ async function handleBusiness(env, m) {
   }
   if (m.from.is_bot) return;
 
-  addHistory(c, 'user', text);
+  addHistory(c, 'user', photo ? '[rasm yubordi] ' + text : text);
   if (Date.now() < c.pausedUntil) return save();
 
   const st = await getSettings(env);
@@ -218,7 +243,7 @@ async function handleBusiness(env, m) {
     if (sent && sent.message_id) { c.sent.push(sent.message_id); if (c.sent.length > 30) c.sent.shift(); }
   };
 
-  if (!text) {
+  if (!text && !photo) {
     if (Date.now() - c.lastFail > 90000) { c.lastFail = Date.now(); await send(NO_TEXT_REPLY); }
     return save();
   }
@@ -227,7 +252,15 @@ async function handleBusiness(env, m) {
   const h = c.history.slice();
   while (h.length && h[0].role !== 'user') h.shift();
   try {
-    const answer = await askAI(env, st.mode, h);
+    let image = null;
+    if (photo) {
+      try { image = await downloadPhoto(env, photo); } catch (e) { console.error('rasm xato:', e.message); }
+      if (!image) {
+        if (Date.now() - c.lastFail > 90000) { c.lastFail = Date.now(); await send(NO_TEXT_REPLY); }
+        return save();
+      }
+    }
+    const answer = await askAI(env, st.mode, h, image);
     await send(answer);
     addHistory(c, 'assistant', answer);
   } catch (e) {
