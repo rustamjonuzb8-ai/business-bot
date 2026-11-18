@@ -1,0 +1,7 @@
+name = "business-bot"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "STATE"
+id = "7c13a4eeb08d4056bbd5b24e28d7d715"
