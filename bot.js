@@ -55,7 +55,7 @@ const FAIL_TEXT = "Xabaringiz chiqmay qoldi, yana bir marta yozib yuboring.";
 const NO_TEXT_REPLY = "Buni ocholmadim, matn qilib yozib yuboring.";
 // =================================================================
 
-const SYSTEM_PROMPT = `Sen ${OWNER_NAME}ning Telegram akkauntida uning tanishlari va do'stlari bilan ${OWNER_NAME} nomidan gaplashasan.
+const BASE_PROMPT = `Sen ${OWNER_NAME}ning Telegram akkauntida uning tanishlari va do'stlari bilan ${OWNER_NAME} nomidan gaplashasan.
 
 Uslub:
 - MUHIM: hamma bilan, hech istisnosiz (ona, do'st, tanish, begona), doim "siz" deb murojaat qil. Hech qachon "sen" dema. "sen", "senga", "seni", "o'zing", "qayerdasan", "nima qilyapsan", "tinchmisan" kabi shakllarni ishlatma. Buning o'rniga "siz", "sizga", "sizni", "o'zingiz", "qayerdasiz", "nima qilyapsiz", "tinchmisiz" de. Rus tilida "вы", ingliz tilida "you" (rasmiy "siz" ohangida) ishlat.
@@ -78,6 +78,49 @@ Qoidalar:
 
 Biznes haqida ma'lumot:
 ${BUSINESS_INFO.trim() || "(Hali kiritilmagan. Aniq savollarga (narx, manzil, muddat) javob bera olmaysan, ularga " + OWNER_NAME + " o'zi javob berishini ayt.)"}`;
+
+
+// ---------- Rejimlar (tugmalar) ----------
+// Tanlangan rejim hamma chatlar uchun bitta. /start orqali almashtiriladi.
+const MODES = {
+  muloyim: {
+    label: '🌸 Muloyim',
+    prompt: "REJIM: MULOYIM. Juda yumshoq, nazokatli, iliq va mehribon gapir. Doim \"siz\" de. Hech qachon qo'pol bo'lma, so'kinma. Kimdir qo'pol gapirsa ham xotirjam va muloyim qol.",
+  },
+  jahldor: {
+    label: '😤 Jahldor',
+    prompt: "REJIM: JAHLDOR. Tik, qo'pol va ayamay gapir: gapni to'g'ri yuzga ayt, yumshatma, xushomad qilma, jahli chiqqan odamdek gapir. Bu rejimda \"sen\" deb murojaat qilish mumkin (yuqoridagi \"siz\" qoidasi shu rejimda bekor). Agar suhbatdosh so'kinsa, haqorat qilsa yoki qo'pol gapirsa, sen ham javoban xohlagancha so'kin va qattiq javob qaytar, qarzdor bo'lib qolma. Suhbatdosh so'kinmasa, o'zing birinchi bo'lib so'kinma, faqat tik va keskin gapir. Faqat millat, din, irq yoki kasallik bo'yicha haqorat qilma, shunday so'zlardan boshqa hamma so'kishlar mumkin. Baribir 1-2 gap bilan qisqa yoz.",
+  },
+  romantik: {
+    label: '💕 Romantik',
+    prompt: "REJIM: ROMANTIK. Iliq, shirin, ishqiy va she'riy ohangda gapir, chiroyli so'zlar va iltifotlar ishlat. Doim \"siz\" de. Qo'pol yoki noo'rin bo'lma, haddan oshma.",
+  },
+  biznesmen: {
+    label: '💼 Biznesmen',
+    prompt: "REJIM: BIZNESMEN. Ishbilarmon, aniq, ishonchli va natijaga yo'naltirilgan gapir. Vaqt, foyda, imkoniyat haqida o'yla, ortiqcha gap yo'q. Doim \"siz\" de.",
+  },
+  maslahatchi: {
+    label: '🧠 Maslahatchi',
+    prompt: "REJIM: MASLAHATCHI. Dono, xotirjam va o'ylangan holda gapir: vaziyatni tushun, amaliy va aniq maslahat ber, kerak bo'lsa aniqlashtiruvchi savol ber. Doim \"siz\" de.",
+  },
+};
+const DEFAULT_MODE = 'muloyim';
+const fs = require('fs');
+const MODE_FILE = process.env.MODE_FILE || '/tmp/bot-mode.json';
+let currentMode = DEFAULT_MODE;
+let ownerId = Number(process.env.OWNER_ID) || 0; // bo'sh bo'lsa, birinchi /start bosgan odam egasi bo'ladi
+try {
+  const saved = JSON.parse(fs.readFileSync(MODE_FILE, 'utf8'));
+  if (MODES[saved.mode]) currentMode = saved.mode;
+  if (!ownerId && saved.ownerId) ownerId = Number(saved.ownerId);
+} catch (_) {}
+if (MODES[process.env.DEFAULT_MODE]) currentMode = process.env.DEFAULT_MODE;
+function saveState() {
+  try { fs.writeFileSync(MODE_FILE, JSON.stringify({ mode: currentMode, ownerId })); } catch (_) {}
+}
+function systemPrompt() {
+  return BASE_PROMPT + '\n\n' + MODES[currentMode].prompt;
+}
 
 // ---------- Chat holati (xotirada) ----------
 const chats = new Map(); // "connId:chatId" -> holat
@@ -119,7 +162,7 @@ function buildRequest(messages, provider, model) {
     url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
     body: {
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      systemInstruction: { parts: [{ text: systemPrompt() }] },
       contents: messages.map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
@@ -341,12 +384,37 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-bot.start((ctx) =>
-  ctx.reply(
-    'Bu bot Telegram Business orqali ishlaydi. ' +
-      "Sozlamalar → Business → Chatlarni avtomatlashtirish bo'limiga ulang."
-  )
-);
+function modeKeyboard() {
+  const rows = Object.entries(MODES).map(([key, m]) => [
+    { text: (key === currentMode ? '✅ ' : '') + m.label, callback_data: 'mode:' + key },
+  ]);
+  return { inline_keyboard: rows };
+}
+function modeText() {
+  return 'Bot qaysi uslubda gaplashsin? Hozirgi rejim: ' + MODES[currentMode].label + '\nTanlang:';
+}
+
+bot.start(async (ctx) => {
+  const uid = ctx.from && ctx.from.id;
+  if (!ownerId && uid) {
+    ownerId = uid;
+    saveState();
+    console.log('Ega aniqlandi (OWNER_ID):', uid);
+  }
+  if (uid !== ownerId) return ctx.reply('Bu bot Telegram Business orqali ishlaydi.');
+  await ctx.reply(modeText(), { reply_markup: modeKeyboard() });
+});
+
+bot.action(/^mode:(\w+)$/, async (ctx) => {
+  if (ctx.from.id !== ownerId) return ctx.answerCbQuery('Ruxsat yo\'q');
+  const key = ctx.match[1];
+  if (!MODES[key]) return ctx.answerCbQuery();
+  currentMode = key;
+  saveState();
+  console.log('Rejim almashdi:', key);
+  await ctx.answerCbQuery('Tanlandi: ' + MODES[key].label);
+  await ctx.editMessageText(modeText(), { reply_markup: modeKeyboard() }).catch(() => {});
+});
 
 bot.catch((err) => console.error('Bot xatosi:', err.message));
 
@@ -371,7 +439,7 @@ async function startBot() {
   for (;;) {
     try {
       await bot.launch({
-        allowedUpdates: ['message', 'business_connection', 'business_message'],
+        allowedUpdates: ['message', 'callback_query', 'business_connection', 'business_message'],
       });
       return; // bot.stop() chaqirilganda shu yerga keladi
     } catch (e) {
