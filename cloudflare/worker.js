@@ -88,35 +88,57 @@ async function getSettings(env) {
 }
 
 // ---------- Gemini ----------
-async function askAI(env, mode, history) {
+const GEMINI_SAFETY = ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
+  .map((category) => ({ category, threshold: 'BLOCK_NONE' }));
+const noThink = new Set(); // thinkingConfig 400 bergan modellar
+
+function geminiModels(env) {
+  return [...new Set([clean(env.AI_MODEL) || 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.5-flash'])];
+}
+
+// Bitta modelga so'rov. Xato bo'lsa {ok:false,status,body}, muvaffaqiyatda {ok:true,text}
+async function geminiCall(env, model, sys, contents) {
   const key = clean(env.GEMINI_API_KEY);
-  const models = [...new Set([clean(env.AI_MODEL) || 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-flash-latest'])];
+  const call = (withThink) =>
+    fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
+      method: 'POST',
+      signal: AbortSignal.timeout(15000),
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: sys }] },
+        contents,
+        generationConfig: withThink
+          ? { maxOutputTokens: 1000, temperature: 1.0, topP: 0.95, thinkingConfig: { thinkingBudget: 0 } }
+          : { maxOutputTokens: 1000, temperature: 1.0, topP: 0.95 },
+        safetySettings: GEMINI_SAFETY,
+      }),
+    });
+  let r = await call(!noThink.has(model));
+  if (r.status === 400 && !noThink.has(model)) {
+    noThink.add(model); // ehtimol thinkingConfig sababli: thinkingsiz qayta urinamiz
+    r = await call(false);
+  }
+  if (!r.ok) return { ok: false, status: r.status, body: (await r.text()).slice(0, 400) };
+  const data = await r.json();
+  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  const text = parts.map((p) => p.text || '').join('').trim();
+  if (!text) return { ok: false, status: 200, body: "bo'sh javob: " + JSON.stringify(data).slice(0, 300) };
+  return { ok: true, text };
+}
+
+async function askAI(env, mode, history) {
   const sys = basePrompt(env) + '\n\n' + MODES[mode].prompt;
-  let lastErr;
-  for (const model of models) {
+  const contents = history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  let lastErr = new Error('AI urinishlari yoq');
+  for (const model of geminiModels(env)) {
     try {
-      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
-        method: 'POST',
-        signal: AbortSignal.timeout(12000),
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: sys }] },
-          contents: history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
-          generationConfig: { maxOutputTokens: 1000, temperature: 1.0, topP: 0.95, thinkingConfig: { thinkingBudget: 0 } },
-          safetySettings: ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
-            .map((category) => ({ category, threshold: 'BLOCK_NONE' })),
-        }),
-      });
-      if (!r.ok) throw new Error('AI HTTP ' + r.status + ' [' + model + '] ' + (await r.text()).slice(0, 200));
-      const data = await r.json();
-      const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-      const text = parts.map((p) => p.text || '').join('').trim();
-      if (!text) throw new Error("bo'sh javob [" + model + ']');
-      return text;
+      const res = await geminiCall(env, model, sys, contents);
+      if (res.ok) return res.text;
+      lastErr = new Error('AI HTTP ' + res.status + ' [' + model + '] ' + res.body);
     } catch (e) {
-      lastErr = e;
-      console.error('AI xato:', e.message);
+      lastErr = new Error('AI xato [' + model + '] ' + (e.name === 'TimeoutError' ? 'vaqt tugadi' : e.message));
     }
+    console.error(lastErr.message);
   }
   throw lastErr;
 }
@@ -222,6 +244,34 @@ export default {
         drop_pending_updates: true,
       });
       return new Response('setWebhook: ' + JSON.stringify(res));
+    }
+
+    // Tekshiruv sahifasi: /debug?key=WEBHOOK_SECRET  -> nima ishlamayotganini ko'rsatadi
+    if (url.pathname === '/debug') {
+      if (!env.WEBHOOK_SECRET || url.searchParams.get('key') !== env.WEBHOOK_SECRET) return new Response('forbidden', { status: 403 });
+      const out = [];
+      const has = (k) => (env[k] ? 'bor (' + String(env[k]).length + ' belgi)' : "YO'Q");
+      out.push('BOT_TOKEN: ' + has('BOT_TOKEN'));
+      out.push('GEMINI_API_KEY: ' + has('GEMINI_API_KEY') + (clean(env.GEMINI_API_KEY) ? ', boshi: ' + clean(env.GEMINI_API_KEY).slice(0, 4) + '...' : ''));
+      out.push('OWNER_NAME: ' + has('OWNER_NAME'));
+      try {
+        await env.STATE.put('debug', String(Date.now()));
+        out.push('KV xotira: ishlayapti');
+      } catch (e) { out.push('KV xotira XATO: ' + e.message); }
+      try {
+        const me = await tg(env, 'getMe', {});
+        out.push('Bot: ' + (me ? '@' + me.username : 'TOKEN XATO'));
+        const wh = await tg(env, 'getWebhookInfo', {});
+        out.push('Webhook: ' + (wh && wh.url ? wh.url : "ulanmagan") + (wh && wh.last_error_message ? ' | oxirgi xato: ' + wh.last_error_message : ''));
+      } catch (e) { out.push('Telegram XATO: ' + e.message); }
+      const contents = [{ role: 'user', parts: [{ text: 'salom' }] }];
+      for (const model of geminiModels(env)) {
+        try {
+          const r = await geminiCall(env, model, 'Qisqa javob ber.', contents);
+          out.push('Gemini ' + model + ': ' + (r.ok ? 'OK -> ' + r.text.slice(0, 40) : 'XATO ' + r.status + ' ' + r.body));
+        } catch (e) { out.push('Gemini ' + model + ': XATO ' + e.message); }
+      }
+      return new Response(out.join('\n'), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
     }
 
     if (url.pathname === '/webhook' && request.method === 'POST') {
