@@ -93,7 +93,9 @@ const putJSON = (env, key, val, ttl) =>
   env.STATE.put(key, JSON.stringify(val), ttl ? { expirationTtl: ttl } : undefined).catch((e) => console.error('KV xato:', e.message));
 
 async function getSettings(env) {
-  const st = await getJSON(env, 'settings', { mode: DEFAULT_MODE, ownerId: 0 });
+  const st = await getJSON(env, 'settings', { mode: DEFAULT_MODE, ownerId: 0, enabled: true, resumeAllAt: 0 });
+  if (st.enabled === undefined) st.enabled = true;
+  if (!st.resumeAllAt) st.resumeAllAt = 0;
   if (!MODES[st.mode]) st.mode = DEFAULT_MODE;
   if (!st.ownerId && env.OWNER_ID) st.ownerId = Number(env.OWNER_ID);
   return st;
@@ -176,10 +178,15 @@ async function downloadPhoto(env, photo) {
 }
 
 // ---------- Tugmalar ----------
-function modeKeyboard(current) {
-  return { inline_keyboard: Object.entries(MODES).map(([k, m]) => [{ text: (k === current ? '✅ ' : '') + m.label, callback_data: 'mode:' + k }]) };
+function modeKeyboard(st) {
+  const rows = Object.entries(MODES).map(([k, m]) => [{ text: (k === st.mode ? '✅ ' : '') + m.label, callback_data: 'mode:' + k }]);
+  rows.push([{ text: st.enabled ? "🟢 Bot yoqilgan (o'chirish)" : "🔴 Bot o'chirilgan (yoqish)", callback_data: 'toggle' }]);
+  rows.push([{ text: '▶️ Hamma chatda botni qayta yoqish', callback_data: 'resume' }]);
+  return { inline_keyboard: rows };
 }
-const modeText = (current) => 'Bot qaysi uslubda gaplashsin? Hozirgi rejim: ' + MODES[current].label + '\nTanlang:';
+const modeText = (st) =>
+  'Bot qaysi uslubda gaplashsin? Hozirgi rejim: ' + MODES[st.mode].label + '\nHolat: ' + (st.enabled ? 'yoqilgan 🟢' : "o'chirilgan 🔴") +
+  "\n\nChatda qo'lda boshqarish: o'zingiz yozsangiz, bot shu chatda 2 soat jim turadi. Chatga + yozsangiz, bot darrov qaytadi. - yozsangiz, 24 soat jim turadi.";
 
 async function handleMessage(env, m) {
   if (!m.text || !m.text.startsWith('/start')) return;
@@ -190,19 +197,31 @@ async function handleMessage(env, m) {
     await putJSON(env, 'settings', st);
   }
   if (uid !== st.ownerId) return tg(env, 'sendMessage', { chat_id: m.chat.id, text: 'Bu bot Telegram Business orqali ishlaydi.' });
-  await tg(env, 'sendMessage', { chat_id: m.chat.id, text: modeText(st.mode), reply_markup: modeKeyboard(st.mode) });
+  await tg(env, 'sendMessage', { chat_id: m.chat.id, text: modeText(st), reply_markup: modeKeyboard(st) });
 }
 
 async function handleCallback(env, q) {
   const st = await getSettings(env);
   if (q.from.id !== st.ownerId) return tg(env, 'answerCallbackQuery', { callback_query_id: q.id, text: "Ruxsat yo'q" });
-  const mm = /^mode:(\w+)$/.exec(q.data || '');
-  if (!mm || !MODES[mm[1]]) return tg(env, 'answerCallbackQuery', { callback_query_id: q.id });
-  st.mode = mm[1];
+  const data = q.data || '';
+  let note = '';
+  const mm = /^mode:(\w+)$/.exec(data);
+  if (mm && MODES[mm[1]]) {
+    st.mode = mm[1];
+    note = 'Tanlandi: ' + MODES[st.mode].label;
+  } else if (data === 'toggle') {
+    st.enabled = !st.enabled;
+    note = st.enabled ? 'Bot yoqildi' : "Bot o'chirildi";
+  } else if (data === 'resume') {
+    st.resumeAllAt = Date.now();
+    note = 'Hamma chatda bot qayta yoqildi';
+  } else {
+    return tg(env, 'answerCallbackQuery', { callback_query_id: q.id });
+  }
   await putJSON(env, 'settings', st);
-  await tg(env, 'answerCallbackQuery', { callback_query_id: q.id, text: 'Tanlandi: ' + MODES[st.mode].label });
+  await tg(env, 'answerCallbackQuery', { callback_query_id: q.id, text: note });
   if (q.message) {
-    await tg(env, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text: modeText(st.mode), reply_markup: modeKeyboard(st.mode) });
+    await tg(env, 'editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, text: modeText(st), reply_markup: modeKeyboard(st) });
   }
 }
 
@@ -228,6 +247,15 @@ async function handleBusiness(env, m) {
   // Egasi yozgan xabar: bot jim turadi
   if (m.from.id !== chatId) {
     if (c.sent.includes(m.message_id)) return; // buni bot o'zi yuborgan
+    const cmd = (m.text || '').trim();
+    if (cmd === '+' || cmd === '-') {
+      // Boshqaruv belgisi: + botni shu chatda darrov qaytaradi, - 24 soat jim qiladi. Xabarni o'chirishga urinamiz.
+      if (cmd === '+') { c.pausedUntil = 0; c.pausedAt = 0; }
+      else { c.pausedAt = Date.now(); c.pausedUntil = Date.now() + 24 * 3600 * 1000; }
+      tg(env, 'deleteBusinessMessages', { business_connection_id: connId, message_ids: [m.message_id] }).catch(() => {});
+      return save();
+    }
+    c.pausedAt = Date.now();
     c.pausedUntil = Date.now() + HUMAN_PAUSE_HOURS * 3600 * 1000;
     addHistory(c, 'assistant', text);
     return save();
@@ -235,9 +263,11 @@ async function handleBusiness(env, m) {
   if (m.from.is_bot) return;
 
   addHistory(c, 'user', photo ? '[rasm yubordi] ' + text : text);
-  if (Date.now() < c.pausedUntil) return save();
-
   const st = await getSettings(env);
+  if (!st.enabled) return save(); // bot butunlay o'chirilgan
+  // Pauza amal qiladi, agar u "hamma chatda qayta yoqish" bosilgandan keyin boshlangan bo'lsa
+  if (Date.now() < c.pausedUntil && (c.pausedAt || 0) > st.resumeAllAt) return save();
+
   const send = async (t) => {
     const sent = await tg(env, 'sendMessage', { business_connection_id: connId, chat_id: chatId, text: t });
     if (sent && sent.message_id) { c.sent.push(sent.message_id); if (c.sent.length > 30) c.sent.shift(); }
