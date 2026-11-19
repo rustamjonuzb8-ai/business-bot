@@ -105,6 +105,8 @@ async function getSettings(env) {
 const GEMINI_SAFETY = ['HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT']
   .map((category) => ({ category, threshold: 'BLOCK_NONE' }));
 const noThink = new Set(); // thinkingConfig 400 bergan modellar
+const GEMINI_TIMEOUT_MS = 10000; // bitta so'rov uchun maksimal kutish (avval 15 soniya edi)
+const HEDGE_MS = 2500; // asosiy model shuncha vaqtda javob bermasa, zaxira model parallel ishga tushadi
 
 function geminiModels(env) {
   return [...new Set([clean(env.AI_MODEL) || 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'])];
@@ -116,7 +118,7 @@ async function geminiCall(env, model, sys, contents) {
   const call = (withThink) =>
     fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent', {
       method: 'POST',
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
       headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: sys }] },
@@ -144,18 +146,40 @@ async function askAI(env, mode, history, image) {
   const sys = 'ENG MUHIM: quyidagi USLUB barcha boshqa qoidalardan ustun. Umumiy qoidalardagi "qisqa yoz", "emoji kam", "oddiy gaplash" kabi talablar uslubga zid bo\'lsa, USLUB g\'olib keladi. Agar suhbatdosh rasm yuborgan bo\'lsa, rasmni ko\'rib chiq va unga uslubga mos, aniq narsalarni tilga olib javob ber. Rasmdagi odamning kimligini taxmin qilma va nomini aytma. Rasmdagi odam bola bo\'lsa, ishqiy yoki tashqi ko\'rinish haqidagi kamplimentlar yo\'q, faqat mehribon va oddiy javob ber.\n\n' + MODES[mode].prompt + '\n\n--- Umumiy qoidalar (uslubga zid bo\'lmagan qismida amal qil) ---\n' + basePrompt(env);
   const contents = history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   if (image && contents.length) contents[contents.length - 1].parts.push({ inline_data: { mime_type: 'image/jpeg', data: image } });
-  let lastErr = new Error('AI urinishlari yoq');
-  for (const model of geminiModels(env)) {
+  const models = geminiModels(env);
+  const attempt = async (model) => {
     try {
       const res = await geminiCall(env, model, sys, contents);
       if (res.ok) return res.text;
-      lastErr = new Error('AI HTTP ' + res.status + ' [' + model + '] ' + res.body);
+      throw new Error('AI HTTP ' + res.status + ' [' + model + '] ' + res.body);
     } catch (e) {
-      lastErr = new Error('AI xato [' + model + '] ' + (e.name === 'TimeoutError' ? 'vaqt tugadi' : e.message));
+      const err = e.name === 'TimeoutError' ? new Error('AI xato [' + model + '] vaqt tugadi') : e;
+      console.error(err.message);
+      throw err;
     }
-    console.error(lastErr.message);
-  }
-  throw lastErr;
+  };
+  // Birinchi (asosiy) model darrov so'raladi. HEDGE_MS ichida javob kelmasa yoki xato bersa,
+  // keyingi model parallel qo'shiladi. Birinchi kelgan muvaffaqiyatli javob olinadi.
+  return new Promise((resolve, reject) => {
+    let next = 0, pending = 0, done = false, timer = null;
+    let lastErr = new Error('AI urinishlari yoq');
+    const launch = () => {
+      clearTimeout(timer);
+      if (done) return;
+      if (next >= models.length) {
+        if (pending === 0) { done = true; reject(lastErr); }
+        return;
+      }
+      const model = models[next++];
+      pending++;
+      attempt(model).then(
+        (text) => { if (!done) { done = true; clearTimeout(timer); resolve(text); } },
+        (e) => { lastErr = e; pending--; launch(); }
+      );
+      if (next < models.length) timer = setTimeout(launch, HEDGE_MS);
+    };
+    launch();
+  });
 }
 
 // ---------- Rasm ----------
