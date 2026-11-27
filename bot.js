@@ -107,6 +107,10 @@ const MODES = {
 const DEFAULT_MODE = 'muloyim';
 const fs = require('fs');
 const MODE_FILE = process.env.MODE_FILE || '/tmp/bot-mode.json';
+let trading = false;
+let generation = 0;
+let busy = false;
+let latest = 'Hali qaror yo‘q.';
 let currentMode = DEFAULT_MODE;
 let ownerId = Number(process.env.OWNER_ID) || 0; // bo'sh bo'lsa, birinchi /start bosgan odam egasi bo'ladi
 try {
@@ -157,12 +161,12 @@ setInterval(() => {
 
 // ---------- AI ----------
 const noThink = new Set(); // thinkingConfig 400 bergan modellar: ularga keyin yuborilmaydi
-function buildRequest(messages, provider, model) {
+function buildRequest(messages, provider, model, instruction = systemPrompt()) {
   return {
     url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
     body: {
-      systemInstruction: { parts: [{ text: systemPrompt() }] },
+      systemInstruction: { parts: [{ text: instruction }] },
       contents: messages.map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
@@ -183,12 +187,12 @@ function parseResponse(data) {
   return parts.map((p) => p.text || '').join('').trim();
 }
 
-async function askOnce(messages, { provider, model }) {
+async function askOnce(messages, { provider, model }, instruction) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
     const call = () => {
-      const req = buildRequest(messages, provider, model);
+      const req = buildRequest(messages, provider, model, instruction);
       return fetch(req.url, {
         method: 'POST',
         signal: ctrl.signal,
@@ -266,6 +270,7 @@ function askAI(messages) {
 
 // ---------- Yuborish ----------
 async function sendReply(connId, chatId, text) {
+  if (trading) return;
   const sent = await bot.telegram.callApi('sendMessage', {
     business_connection_id: connId,
     chat_id: chatId,
@@ -302,6 +307,7 @@ async function fallbackReply(st, connId, chatId, text) {
 
 // ---------- Asosiy mantiq ----------
 async function handleBusinessMessage(m) {
+  if (trading) return;
   const connId = m.business_connection_id;
   if (!connId || !m.chat || !m.from) return;
 
@@ -388,9 +394,11 @@ function modeKeyboard() {
   const rows = Object.entries(MODES).map(([key, m]) => [
     { text: (key === currentMode ? '✅ ' : '') + m.label, callback_data: 'mode:' + key },
   ]);
-  return { inline_keyboard: rows };
+  const top = [{text:'💬 Suhbat', callback_data:'work:chat'}, {text:'📈 Trading', callback_data:'work:trade'}];
+  return {inline_keyboard:[top, ...(trading ? [[{text:'Natija',callback_data:'work:result'}]] : rows)]};
 }
 function modeText() {
+  if (trading) return 'Trading · virtual hisob. ' + latest;
   return 'Bot qaysi uslubda gaplashsin? Hozirgi rejim: ' + MODES[currentMode].label + '\nTanlang:';
 }
 
@@ -408,7 +416,7 @@ bot.start(async (ctx) => {
 bot.action(/^mode:(\w+)$/, async (ctx) => {
   if (ctx.from.id !== ownerId) return ctx.answerCbQuery('Ruxsat yo\'q');
   const key = ctx.match[1];
-  if (!MODES[key]) return ctx.answerCbQuery();
+  if (trading || !MODES[key]) return ctx.answerCbQuery();
   currentMode = key;
   saveState();
   console.log('Rejim almashdi:', key);
@@ -416,6 +424,66 @@ bot.action(/^mode:(\w+)$/, async (ctx) => {
   await ctx.editMessageText(modeText(), { reply_markup: modeKeyboard() }).catch(() => {});
 });
 
+const paper = 'https://paper-api.alpaca.markets';
+async function requestPaper(path, order, host = paper) {
+  const r = await fetch(host + path, {
+    method:order ? 'POST' : 'GET', redirect:'error', signal:AbortSignal.timeout(10000),
+    headers:{'APCA-API-KEY-ID':process.env.ALPACA_PAPER_KEY_ID,
+      'APCA-API-SECRET-KEY':process.env.ALPACA_PAPER_SECRET_KEY, 'content-type':'application/json'},
+    body:order ? JSON.stringify(order) : undefined
+  });
+  if (!r.ok) throw new Error('Paper API ' + r.status);
+  return r.json();
+}
+async function tick() {
+  if (!trading || busy) return;
+  busy = true;
+  const version = generation;
+  try {
+    if (!(await requestPaper('/v2/clock')).is_open) { latest = 'Bozor yopiq.'; return; }
+    const [positions, orders, data] = await Promise.all([
+      requestPaper('/v2/positions'), requestPaper('/v2/orders?status=open&symbols=SPY'),
+      requestPaper('/v2/stocks/SPY/bars?feed=iex&timeframe=1Min&sort=desc&limit=15', undefined, 'https://data.alpaca.markets')
+    ]);
+    if (orders.length) { latest = 'Buyurtma bajarilishi kutilmoqda.'; return; }
+    const bars = data.bars || [];
+    const stamp = Date.parse(bars[0]?.t);
+    if (bars.length < 5 || !Number.isFinite(stamp) || Date.now() - stamp > 300000) { latest = 'Yangi narx kutilmoqda.'; return; }
+    const position = positions.find(p => p.symbol === 'SPY');
+    const qty = Number(position?.qty || 0);
+    const answer = await askOnce([{role:'user',content:JSON.stringify({qty, newestFirst:bars.map(b=>b.c)})}], ATTEMPTS[0],
+      'Virtual savdo simulyatsiyasi. Narxlar va mavjud miqdorni tahlil qil. Faqat BUY, SELL yoki HOLD qaytar.');
+    if (!trading || version !== generation) return;
+    const buy = answer.trim() === 'BUY' && qty === 0;
+    const sell = answer.trim() === 'SELL' && qty > 0;
+    if (!buy && !sell) {latest = 'Kutish.'; return;}
+    await requestPaper('/v2/orders',{symbol:'SPY', side:buy ? 'buy':'sell', type:'market', time_in_force:'day',
+      client_order_id:'tg-paper-'+stamp, ...(buy ? {notional:'10'} : {qty:position.qty})});
+    latest = buy ? 'Virtual xarid buyurtmasi yuborildi.' : 'Virtual sotuv buyurtmasi yuborildi.';
+  } catch {latest = 'Tekshiruvda xato. Buyurtmalarni paper hisobda tekshiring.';}
+  finally {busy = false;}
+}
+setInterval(tick, 300000).unref();
+bot.action(/^work:(chat|trade|result)$/, async ctx => {
+  if (ctx.chat?.type !== 'private' || ctx.from.id !== ownerId) return ctx.answerCbQuery('Ruxsat yo‘q');
+  const action = ctx.match[1];
+  if (action === 'chat') {
+    trading = false; generation++;
+    await ctx.answerCbQuery();
+  } else {
+    if (Number(process.env.OWNER_ID) !== ctx.from.id || !process.env.ALPACA_PAPER_KEY_ID || !process.env.ALPACA_PAPER_SECRET_KEY)
+      return ctx.answerCbQuery('Serverda OWNER_ID va Alpaca paper kalitlarini kiriting.',{show_alert:true});
+    const version = generation;
+    await ctx.answerCbQuery();
+    try {
+      const account = await requestPaper('/v2/account');
+      if (version !== generation) return;
+      if (action === 'result') return ctx.reply('Virtual hisob qiymati: '+account.equity+' USD. '+latest);
+      if (!trading) { trading = true; generation++; void tick(); }
+    } catch { return ctx.reply('Paper hisobiga ulanib bo‘lmadi.'); }
+  }
+  await ctx.editMessageText(modeText(),{reply_markup:modeKeyboard()}).catch(()=>{});
+});
 bot.catch((err) => console.error('Bot xatosi:', err.message));
 
 const PORT = process.env.PORT || 3000;
